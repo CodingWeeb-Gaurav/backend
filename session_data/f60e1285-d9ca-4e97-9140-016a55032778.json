@@ -1,0 +1,19 @@
+{
+    "agent": "product_request",
+    "product_id": "",
+    "product_name": "",
+    "product_details": {},
+    "request": "",
+    "session_id": "f60e1285-d9ca-4e97-9140-016a55032778",
+    "userAuth": "dummy-user-auth-123",
+    "history": [
+        {
+            "user": "hello",
+            "agent": "Agent 1 (Product Request): hello"
+        },
+        {
+            "user": "what is this",
+            "agent": "Agent 1 (Product Request): what is this"
+        }
+    ]
+}

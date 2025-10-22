@@ -1,0 +1,1 @@
+**Chats older than 1 day are deleted from mongoDB**

@@ -1,0 +1,70 @@
+Agent 1
+
+1. 4 use case rahenge  ppr/order /sample/quotation (note: nishchem will not have ppr)
+2. when we are showing product in chatbot, we need to define seller name, when same product is sold is by different vendor 
+3. once product is chosen by the user, then we need to show other details of the product such as description.,specification, brandname, pay later (optional) avl or not,
+4. before proceeding for <request> chatbot needs to confirm the productname once again.
+4.1 If no, show the product list again and request list, and once user confirms the product and the request then proceed.
+
+json {
+name, id, request, unit is a fixed value in the returned json}
+
+
+Agent 2:
+1. mention all the questions which should be asked which are there in the flow of the specific request.
+2. while selecting quantity for order and quotation, if user selects for quantity below the min, there should be a reminder or alert to select the quantity above the minimum quantity.
+3. For selecting the unit, order / quotation will only be accepted in the unit mentioned by the admin for nishchem. but for the sample part, it can go in any unit(KG/TON) otherwise in order/quotation the unit will be selected from the json returned from the API.
+
+quantity, unit price, expected amount, incoterm (Ex-factory, buyer factory), mode of payment, packaging, additional information, end date
+
+TOMMOROW (EOD)
+
+Agent 3;
+1. Fetch the address from the userAuth and display them and let the user choose from them.
+2. Phone number , purpose(industry)
+
+
+
+
+Quotation:
+product, market, quantity, unit, price per unit, expected amount, shipping address, ph num, incoterm(fetch), 
+
+mode of payment(Fetch) , packaging preference(Fetch) , ??
+additional information(optional)
+
+sample:
+product, market, quantity, unit, price per unit, expected amount, shipping address, ph num, incoterm, 
+
+mode of payment , packaging preference, ??
+additional information (optional)
++ +expected purchase date
+
+Order:
+prod, quantity, unit, price per unit, expected amount, address, intercom, mode of payment, packaging preference, end date, 
+
+
+ppr(chemfalcon only)
+product, quantity, unit, expected price, end date, upload document,  address,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
