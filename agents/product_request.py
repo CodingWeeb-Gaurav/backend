@@ -90,7 +90,7 @@ async def handle_product_request(user_input: str, session_data: dict):
 
 async def process_with_ai_tools(user_input: str, session_data: dict):
     """
-    Core AI processing with tool calling - Fixed for OpenRouter compatibility
+    Core AI processing with tool calling - Fixed for proper product data storage
     """
     # Build comprehensive system prompt
     system_prompt = """You are a **specialized Order Assistant** for internal lab use.
@@ -105,29 +105,39 @@ CRITICAL RULES - YOU MUST FOLLOW THESE:
 4. **Empty Results**: If API returns 0 products, inform user and suggest alternatives
 5. **Confirmation Required**: ALWAYS get explicit confirmation before finalizing selections
 6. **Valid Request Types**: Only accept "sample", "quotation", "ppr", or "order" - nothing else
+7. **EXACT Product Data**: When updating session, use the EXACT product data from inventory API - never invent IDs or details
 
 CONVERSATION FLOW:
 1. **Greeting**: Welcome user and ask what they need
 2. **Product Search**: Use fetch_inventory_query when products mentioned
-3. **Product Presentation**: Show available products in clear numbered list with: name_en, brand_en
+3. **Product Presentation**: Show available products in clear numbered list with: name_en, brand_en and _id fields only.
 4. **Product Selection**: Help user choose one product by number, name, or brand
-5. **Product Confirmation**: Show full product details and get explicit confirmation
+5. **Product Confirmation**: Show full product details (fields to show: name_en, brand_en, _id, specification_en, description_en, unit, minQuantity and quantity ONLY) and get explicit confirmation
 6. **Request Type**: Ask for request type if not already specified
 7. **Final Confirmation**: Confirm both product AND request type before handover
 
 SESSION UPDATE RULES (use update_session_memory tool):
 - Update ONLY when user explicitly confirms both product AND request type
-- Set product_id: Use exact _id from selected product
-- Set product_name: Use exact name_en from selected product  
-- Set product_details: Store FULL product object
+- Set product_id: Use EXACT _id from selected product in inventory results
+- Set product_name: Use EXACT name_en from selected product in inventory results  
+- Set product_details: Store COMPLETE product object from inventory results (all fields)
 - Set request: "sample", "quotation", "ppr", or "order" ONLY
 - Set agent: "request_details" ONLY when handing over
+
+IMPORTANT: The product_details when saving to session_data and when confirming the product, must contain the ENTIRE product object from the API including:
+- _id (exact value from API)
+- name_en, 
+- description_en, 
+- specification_en
+- price, quantity, minQuantity, unit
+- brand_en, rating, and all other fields
 
 GUARDRAILS:
 - Never hand over without explicit user confirmation
 - Never update session for partial information
 - Never accept invalid request types
 - Never proceed without verifying product availability
+- Never invent product IDs or details - use EXACT data from API
 
 CURRENT SESSION STATE:
 - agent: product_request (you are active)
@@ -176,21 +186,21 @@ CURRENT SESSION STATE:
                 "type": "function",
                 "function": {
                     "name": "update_session_memory",
-                    "description": "Update session data ONLY when user explicitly confirms both product selection AND request type.",
+                    "description": "Update session data ONLY when user explicitly confirms both product selection AND request type. Use EXACT product data from inventory results.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "product_id": {
                                 "type": "string",
-                                "description": "Exact _id of the confirmed product from inventory results"
+                                "description": "EXACT _id of the confirmed product from inventory API results"
                             },
                             "product_name": {
                                 "type": "string", 
-                                "description": "Exact name_en of the confirmed product"
+                                "description": "EXACT name_en of the confirmed product from inventory API results"
                             },
                             "product_details": {
                                 "type": "object",
-                                "description": "FULL product object from inventory results"
+                                "description": "COMPLETE product object from inventory API results with ALL fields"
                             },
                             "request": {
                                 "type": "string",
@@ -248,16 +258,27 @@ CURRENT SESSION STATE:
                 })
                 
             elif function_name == "update_session_memory":
-                # Collect session updates
-                session_updates.update(function_args)
-                print(f"💾 AI explicitly updating session: {function_args}")
-                
-                # Add tool confirmation
-                follow_up_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps({"status": "success", "message": "Session updated"})
-                })
+                # Validate that product_details contains actual data
+                product_details = function_args.get("product_details", {})
+                if not product_details or "_id" not in product_details:
+                    print("❌ AI tried to update session with invalid product_details")
+                    follow_up_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps({"status": "error", "message": "Invalid product_details - must contain complete product object from API"})
+                    })
+                else:
+                    # Collect session updates
+                    session_updates.update(function_args)
+                    print(f"💾 AI updating session with product_id: {function_args.get('product_id')}")
+                    print(f"💾 Product details keys: {list(product_details.keys())}")
+                    
+                    # Add tool confirmation
+                    follow_up_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps({"status": "success", "message": "Session updated with complete product data"})
+                    })
         
         # Get final AI response with tool results
         final_response_obj = await client.chat.completions.create(

@@ -6,6 +6,88 @@ from agents.product_request import handle_product_request
 from agents.request_details import handle_request_details
 from agents.address_purpose import handle_address_purpose
 
+# ---------- Field Definitions ---------- #
+
+FIELD_METADATA = {
+    "unit": {
+        "type": "select",
+        "options": ["KG", "TON"],
+        "required_for": ["order", "sample", "quotation", "ppr"],
+        "agent": 2,
+        "description": "Unit of measurement for the product"
+    },
+    "quantity": {
+        "type": "number", 
+        "validation": "positive_number",
+        "required_for": ["order", "sample", "quotation", "ppr"],
+        "agent": 2,
+        "description": "Quantity required (must be positive number), greater than or equal to minQuantity and less than available stock" 
+    },
+    "price_per_unit": {
+        "type": "number",
+        "validation": "positive_number", 
+        "required_for": ["order", "sample", "quotation", "ppr"],
+        "agent": 2,
+        "description": "Price per unit (must be positive number)"
+    },
+    "expected_price": {
+        "type": "calculated",
+        "calculation": "quantity * price_per_unit",
+        "required_for": ["order", "sample", "quotation", "ppr"],
+        "agent": 2,
+        "description": "Automatically calculated total price"
+    },
+    "address": {
+        "type": "select",
+        "options": "fetch_from_user_account via API",
+        "required_for": ["order", "sample", "quotation", "ppr"],
+        "agent": 3,
+        "description": "Delivery address (choose from saved addresses)"
+    },
+    "phone": {
+        "type": "phone",
+        "validation": "phone_number",
+        "required_for": ["order", "sample", "quotation"],
+        "agent": 2,
+        "description": "Contact phone number"
+    },
+    "incoterm": {
+        "type": "select",
+        "options": ["Ex Factory", "Deliver to Buyer Factory"],
+        "required_for": ["order", "sample", "quotation"],
+        "agent": 2,
+        "description": "International commercial terms"
+    },
+    "mode_of_payment": {
+        "type": "select", 
+        "options": ["LC", "TT", "Cash"],
+        "required_for": ["order", "sample", "quotation"],
+        "agent": 2,
+        "description": "Payment method"
+    },
+    "packaging_pref": {
+        "type": "select",
+        "options": ["Bulk Tanker", "PP Bag", "Jerry Can", "Drum"],
+        "required_for": ["order", "sample", "quotation"],
+        "agent": 2,
+        "description": "Packaging preference"
+    },
+    "delivery_date": {
+        "type": "date",
+        "validation": "future_date",
+        "required_for": ["order", "sample", "ppr"],
+        "agent": 2,
+        "description": "Delivery date (must be after today)"
+    },
+    "market": {
+        "type": "select",
+        "options": "fetch_from_site via API",
+        "required_for": ["order","ppr"],
+        "agent": 3,
+        "description": "Target market"
+    }
+}
+
 # ---------- Helper Functions ---------- #
 
 async def save_to_mongo_stub(session_id: str, message: str, response: str):
@@ -28,6 +110,7 @@ async def create_new_session(session_id: str, user_auth: str) -> Dict[str, Any]:
         "session_id": session_id,
         "userAuth": user_auth,
         "history": [],
+        "field_metadata": FIELD_METADATA,  # Store field definitions
         "last_updated": datetime.datetime.utcnow()
     }
     await db.agent_sessions.update_one(
@@ -63,35 +146,26 @@ async def save_session(session_id: str, data: Dict[str, Any]):
 
 def expand_session_for_request(data: Dict[str, Any]):
     """
-    Add new fields dynamically based on request type.
+    Add new fields dynamically based on request type with validation rules.
     """
     request_type = data.get("request", "").lower()
-    base_fields = {
-        "unit": "",
-        "quantity": "",
-        "price_per_unit": "",
-        "expected_price": "",
-        "address": "",
-        "phone": "",
-        "incoterm": "",
-        "mode_of_payment": "",
-        "packaging_pref": "",
-        "delivery_date": "",
-        "market": "",
-    }
-
-    new_fields = {}
-    if request_type in ["order", "sample", "quotation", "ppr"]:
-        new_fields.update(base_fields)
-        if request_type == "quotation":
-            del new_fields["market"]
-            del new_fields["delivery_date"]
-        elif request_type in ["sample", "order"]:
-            del new_fields["market"]
-        elif request_type == "ppr":
-            del new_fields["phone"]
-
-    data["product_details"].update(new_fields)
+    
+    # Initialize all fields with empty values and metadata
+    for field_name, field_meta in FIELD_METADATA.items():
+        if request_type in field_meta["required_for"]:
+            if field_name not in data["product_details"]:
+                data["product_details"][field_name] = ""
+            
+            # Store validation info with the field
+            if "validation_info" not in data["product_details"]:
+                data["product_details"]["validation_info"] = {}
+            data["product_details"]["validation_info"][field_name] = {
+                "type": field_meta["type"],
+                "options": field_meta.get("options", []),
+                "validation": field_meta.get("validation", ""),
+                "description": field_meta["description"]
+            }
+    
     return data
 
 def expand_session_for_address_purpose(data: Dict[str, Any]):
@@ -111,7 +185,7 @@ async def route_message(user_input: str, session_id: str, user_auth: str) -> str
     """
     session_data = await load_session(session_id)
 
-    # If session doesn’t exist, start a new one
+    # If session doesn't exist, start a new one
     if not session_data:
         session_data = await create_new_session(session_id, user_auth)
         current_agent = "product_request"
