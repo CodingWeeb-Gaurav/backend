@@ -2,21 +2,45 @@
 import asyncio
 import json
 import ssl
+import re
+
 from openai import AsyncOpenAI
 import aiohttp
 import certifi
+import os
+from dotenv import load_dotenv
+# Load environment variables from .env file
+load_dotenv()
 
 # Initialize Async client for OpenRouter
 client = AsyncOpenAI(
-    api_key="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",
+    api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1"
 )
 
+# Allowed units for order placement
+ALLOWED_UNITS = ["KG", "TON", "L"]
+
+# Global cache for product searches
+PRODUCT_CACHE = {}
+# Cache for individual product details by ID
+PRODUCT_DETAILS_CACHE = {}
+# Cache for product list numbering
+PRODUCT_LIST_CACHE = {}
+# Cache for current product list display
+CURRENT_PRODUCT_LIST = []
+
 async def fetch_inventory_query(query: str):
     """
-    Fetch products from inventory API - Tool for AI to call
+    Fetch products from inventory API - Tool for AI to call with caching
     """
-    print(f"🔍 AI calling inventory API: {query}")
+    # Check cache first
+    cache_key = query.lower().strip()
+    if cache_key in PRODUCT_CACHE:
+        print(f"🔄 Using cached results for: {query}")
+        return PRODUCT_CACHE[cache_key]
+    
+    print(f"🔍 Fetching from API: {query}")
     url = "https://nischem.com:2053/inventory/getQueryResult"
     headers = {
         "Content-Type": "application/json",
@@ -37,10 +61,78 @@ async def fetch_inventory_query(query: str):
             async with session.patch(url, headers=headers, json=data, ssl=False) as response:
                 result = await response.json()
                 print(f"✅ API call successful, found {len(result.get('results', {}).get('products', []))} products")
+                
+                # Cache the result AND cache individual product details
+                PRODUCT_CACHE[cache_key] = result
+                
+                # Clear previous list cache
+                PRODUCT_LIST_CACHE.clear()
+                CURRENT_PRODUCT_LIST.clear()
+                
+                # Also cache each product individually by ID for quick lookup
+                if result.get("results", {}).get("products"):
+                    valid_products = []
+                    for i, product in enumerate(result["results"]["products"]):
+                        product_id = product.get("_id")
+                        unit = product.get("unit", "Not specified")
+                        
+                        # Check if unit is allowed
+                        if unit.upper() in ALLOWED_UNITS:
+                            if product_id:
+                                # Store complete product data
+                                PRODUCT_DETAILS_CACHE[product_id] = product
+                                # Map list number to product ID
+                                PRODUCT_LIST_CACHE[str(i + 1)] = product_id
+                                CURRENT_PRODUCT_LIST.append(product)
+                                
+                                print(f"💾 Cached product {i+1}: {product.get('name_en')} -> ID: {product_id}")
+                            valid_products.append(product)
+                    
+                    # Update the result with only valid products
+                    result["results"]["products"] = valid_products
+                    result["results"]["valid_count"] = len(valid_products)
+                    
+                    print(f"📊 Cached {len(valid_products)} valid products with list mapping")
+                    print(f"📋 Current list mappings: {PRODUCT_LIST_CACHE}")
+                
                 return result
     except Exception as e:
         print(f"❌ API call failed: {e}")
         return {"error": True, "results": {"products": []}}
+
+def get_current_cached_data_for_prompt():
+    """
+    Get current cached product data formatted for system prompt
+    """
+    if not CURRENT_PRODUCT_LIST:
+        return "No products currently cached. Please search for products first."
+    
+    # Prepare clean product data for the prompt
+    products_data = []
+    for i, product in enumerate(CURRENT_PRODUCT_LIST):
+        product_info = {
+            "list_number": i + 1,
+            "name_en": product.get("name_en", "N/A"),
+            "brand_en": product.get("brand_en", "N/A"),
+            "unit": product.get("unit", "N/A"),
+            "minQuantity": product.get("minQuantity", "N/A"),
+            "maxQuantity": product.get("maxQuantity", product.get("quantity", "N/A")),  # Handle both fields
+            "specification_en": product.get("specification_en", "N/A"),
+            "description_en": product.get("description_en", "N/A"),
+            "modal": product.get("modal", "N/A"),
+            "_id": product.get("_id", "N/A")
+        }
+        products_data.append(product_info)
+    
+    return json.dumps(products_data, indent=2, ensure_ascii=False)
+
+def get_product_by_id(product_id: str):
+    """
+    Get complete product details by ID from cache
+    """
+    if product_id in PRODUCT_DETAILS_CACHE:
+        return PRODUCT_DETAILS_CACHE[product_id]
+    return None
 
 async def update_session_memory(updates: dict):
     """
@@ -90,62 +182,11 @@ async def handle_product_request(user_input: str, session_data: dict):
 
 async def process_with_ai_tools(user_input: str, session_data: dict):
     """
-    Core AI processing with tool calling - Fixed for proper product data storage
+    Core AI processing with tool calling - Using GPT-4o with optimized caching
     """
-    # Build comprehensive system prompt
-    system_prompt = """You are a **specialized Order Assistant** for internal lab use.
-You are the **FIRST agent** in a multi-agent workflow. Your job ends when you successfully collect:
-1. A confirmed product selection
-2. A confirmed request type (sample, quotation, ppr, or order)
-
-CRITICAL RULES - YOU MUST FOLLOW THESE:
-1. **Memory Check**: On EVERY message, first check if agent is "product_request". If not, DO NOT respond - just return idle.
-2. **Product Search**: When user mentions ANY product, IMMEDIATELY call fetch_inventory_query
-3. **No Product Invention**: NEVER invent or show products that don't exist in API response
-4. **Empty Results**: If API returns 0 products, inform user and suggest alternatives
-5. **Confirmation Required**: ALWAYS get explicit confirmation before finalizing selections
-6. **Valid Request Types**: Only accept "sample", "quotation", "ppr", or "order" - nothing else
-7. **EXACT Product Data**: When updating session, use the EXACT product data from inventory API - never invent IDs or details
-
-CONVERSATION FLOW:
-1. **Greeting**: Welcome user and ask what they need
-2. **Product Search**: Use fetch_inventory_query when products mentioned
-3. **Product Presentation**: Show available products in clear numbered list with: name_en, brand_en and _id fields only.
-4. **Product Selection**: Help user choose one product by number, name, or brand
-5. **Product Confirmation**: Show full product details (fields to show: name_en, brand_en, _id, specification_en, description_en, unit, minQuantity and quantity ONLY) and get explicit confirmation
-6. **Request Type**: Ask for request type if not already specified
-7. **Final Confirmation**: Confirm both product AND request type before handover
-
-SESSION UPDATE RULES (use update_session_memory tool):
-- Update ONLY when user explicitly confirms both product AND request type
-- Set product_id: Use EXACT _id from selected product in inventory results
-- Set product_name: Use EXACT name_en from selected product in inventory results  
-- Set product_details: Store COMPLETE product object from inventory results (all fields)
-- Set request: "sample", "quotation", "ppr", or "order" ONLY
-- Set agent: "request_details" ONLY when handing over
-
-IMPORTANT: The product_details when saving to session_data and when confirming the product, must contain the ENTIRE product object from the API including:
-- _id (exact value from API)
-- name_en, 
-- description_en, 
-- specification_en
-- price, quantity, minQuantity, unit
-- brand_en, rating, and all other fields
-
-GUARDRAILS:
-- Never hand over without explicit user confirmation
-- Never update session for partial information
-- Never accept invalid request types
-- Never proceed without verifying product availability
-- Never invent product IDs or details - use EXACT data from API
-
-CURRENT SESSION STATE:
-- agent: product_request (you are active)
-- request: (empty until user selects)
-- product_id: (empty until user selects)
-- product_name: (empty until user selects)"""
-
-    # Prepare messages
+    # Build comprehensive system prompt with CURRENT cached data
+    system_prompt = build_system_prompt()
+    
     messages = [
         {"role": "system", "content": system_prompt}
     ]
@@ -159,9 +200,9 @@ CURRENT SESSION STATE:
     # Add current user message
     messages.append({"role": "user", "content": user_input})
     
-    # Get AI response with tool calling
+    # Get AI response with tool calling using GPT-4o
     response = await client.chat.completions.create(
-        model="anthropic/claude-3.5-sonnet",
+        model="openai/gpt-4o",
         messages=messages,
         max_tokens=1000,
         tools=[
@@ -169,13 +210,13 @@ CURRENT SESSION STATE:
                 "type": "function",
                 "function": {
                     "name": "fetch_inventory_query",
-                    "description": "Search inventory for products. Call this when user mentions any product, chemical, or material.",
+                    "description": "Search inventory for NEW products. Only use when user wants to search for different products than what's currently cached.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string", 
-                                "description": "Product name, chemical name, or search terms extracted from user message"
+                                "description": "Product name or description to search for"
                             }
                         },
                         "required": ["query"]
@@ -186,21 +227,21 @@ CURRENT SESSION STATE:
                 "type": "function",
                 "function": {
                     "name": "update_session_memory",
-                    "description": "Update session data ONLY when user explicitly confirms both product selection AND request type. Use EXACT product data from inventory results.",
+                    "description": "Update session data ONLY when user explicitly confirms both product selection AND request type. MUST include complete product_details object with _id field.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "product_id": {
                                 "type": "string",
-                                "description": "EXACT _id of the confirmed product from inventory API results"
+                                "description": "EXACT _id of the confirmed product from cached results"
                             },
                             "product_name": {
                                 "type": "string", 
-                                "description": "EXACT name_en of the confirmed product from inventory API results"
+                                "description": "EXACT name_en of the confirmed product from cached results"
                             },
                             "product_details": {
                                 "type": "object",
-                                "description": "COMPLETE product object from inventory API results with ALL fields"
+                                "description": "COMPLETE product object from cached results with ALL fields including _id. MUST be the full product object, not just selected fields."
                             },
                             "request": {
                                 "type": "string",
@@ -246,9 +287,31 @@ CURRENT SESSION STATE:
             })
             
             if function_name == "fetch_inventory_query":
-                # Call inventory API
+                # Call inventory API with caching
                 query = function_args["query"]
                 inventory_result = await fetch_inventory_query(query)
+                
+                # Filter products by allowed units
+                if inventory_result.get("results", {}).get("products"):
+                    valid_products = []
+                    invalid_products = []
+                    
+                    for product in inventory_result["results"]["products"]:
+                        unit = product.get("unit", "Not specified")
+                        
+                        # Check if unit is allowed
+                        if unit.upper() in ALLOWED_UNITS:
+                            valid_products.append(product)
+                        else:
+                            invalid_products.append(product)
+                    
+                    # Update the result with only valid products
+                    inventory_result["results"]["products"] = valid_products
+                    inventory_result["results"]["invalid_products"] = invalid_products
+                    inventory_result["results"]["valid_count"] = len(valid_products)
+                    inventory_result["results"]["invalid_count"] = len(invalid_products)
+                    
+                    print(f"📊 Filtered results: {len(valid_products)} valid products, {len(invalid_products)} invalid products")
                 
                 # Add tool result to messages
                 follow_up_messages.append({
@@ -258,31 +321,72 @@ CURRENT SESSION STATE:
                 })
                 
             elif function_name == "update_session_memory":
-                # Validate that product_details contains actual data
+                # Validate that product_details contains actual data with _id
                 product_details = function_args.get("product_details", {})
+                product_id = function_args.get("product_id")
+                
+                print(f"🔍 Validating product_details for session update:")
+                print(f"   - Product ID from args: {product_id}")
+                print(f"   - Product details type: {type(product_details)}")
+                print(f"   - Product details keys: {list(product_details.keys()) if product_details else 'None'}")
+                print(f"   - Has _id: {'_id' in product_details if product_details else False}")
+                
+                # If product_details is empty or missing _id, try to get it from cache
                 if not product_details or "_id" not in product_details:
-                    print("❌ AI tried to update session with invalid product_details")
+                    print(f"🔄 Attempting to get product details from cache for ID: {product_id}")
+                    cached_product = get_product_by_id(product_id)
+                    if cached_product:
+                        print(f"✅ Found product in cache, updating product_details")
+                        function_args["product_details"] = cached_product
+                        product_details = cached_product
+                    else:
+                        print("❌ Product not found in cache either")
+                
+                # Final validation
+                if not product_details or "_id" not in product_details:
+                    print("❌ AI tried to update session with invalid product_details - missing _id")
                     follow_up_messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": json.dumps({"status": "error", "message": "Invalid product_details - must contain complete product object from API"})
+                        "content": json.dumps({
+                            "status": "error", 
+                            "message": "Invalid product_details - must contain complete product object from API with _id field. Use exact data from cached results."
+                        })
                     })
                 else:
-                    # Collect session updates
-                    session_updates.update(function_args)
-                    print(f"💾 AI updating session with product_id: {function_args.get('product_id')}")
-                    print(f"💾 Product details keys: {list(product_details.keys())}")
-                    
-                    # Add tool confirmation
-                    follow_up_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps({"status": "success", "message": "Session updated with complete product data"})
-                    })
+                    # 🔧 Validate unit before proceeding
+                    unit = product_details.get("unit", "").upper()
+                    if unit not in ALLOWED_UNITS:
+                        error_msg = f"Cannot proceed with product '{product_details.get('name_en')}' - unit '{unit}' is not allowed. Allowed units: {', '.join(ALLOWED_UNITS)}"
+                        print(f"❌ {error_msg}")
+                        follow_up_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps({"status": "error", "message": error_msg})
+                        })
+                    else:
+                        # Collect session updates
+                        session_updates.update(function_args)
+                        print(f"💾 AI updating session with product_id: {product_id}")
+                        print(f"💾 Product name: {function_args.get('product_name')}")
+                        print(f"💾 Request type: {function_args.get('request')}")
+                        print(f"💾 Product details validated successfully")
+                        
+                        # Add tool confirmation
+                        follow_up_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps({
+                                "status": "success", 
+                                "message": "Session updated with complete product data",
+                                "product_id": product_id,
+                                "product_name": function_args.get('product_name')
+                            })
+                        })  
         
         # Get final AI response with tool results
         final_response_obj = await client.chat.completions.create(
-            model="anthropic/claude-3.5-sonnet",
+            model="openai/gpt-4o",
             messages=follow_up_messages,
             max_tokens=800
         )
@@ -294,3 +398,68 @@ CURRENT SESSION STATE:
         "response": final_response,
         "session_updates": session_updates
     }
+
+def build_system_prompt() -> str:
+    """Build system prompt with current cached data included"""
+    
+    # Get current cached data for the prompt
+    cached_data = get_current_cached_data_for_prompt()
+    
+    system_prompt = f"""You are a conversational product selection assistant. Your goal is to help users find the right product and specify their request type.
+You are the first agent in a triple-agent system where you handle product searches and selections. After your completion, you will hand over to the second agent who collects request details by changing the session's agent to "request_details".
+CURRENT CACHED PRODUCT DATA:
+{cached_data}
+
+CRITICAL RULES FOR SESSION UPDATES:
+- When calling update_session_memory, you MUST provide the COMPLETE product_details object from the cached data above
+- The product_details MUST include all fields, especially the _id field
+- Do NOT create a new object or modify the fields - use the exact object from cached data
+- Find the complete product object by matching product_id or list_number from the cached data
+
+HOW TO GET COMPLETE PRODUCT_DETAILS FOR SESSION UPDATE:
+1. When user confirms a product, note the product_id (e.g., "68f9da20c7fe40d80722c436")
+2. Find the matching product in the cached data above by _id field
+3. Use that EXACT product object as the product_details parameter
+4. Do NOT create a new object with selected fields
+
+EXAMPLE OF CORRECT update_session_memory CALL:
+{{
+  "product_id": "68f9da20c7fe40d80722c436",
+  "product_name": "sulphuric", 
+  "product_details": {{
+    "_id": "68f9da20c7fe40d80722c436",
+    "name_en": "sulphuric",
+    "brand_en": "Deco",
+    "unit": "KG",
+    "minQuantity": 12,
+    "maxQuantity": 768,
+    "specification_en": "hbwherbwrwirwirhwir",
+    "description_en": "sdfsdjnwejjjiherjithjret", 
+    "modal": "acsd"
+    // ... ALL other fields from cached data
+  }},
+  "request": "order",
+  "agent": "request_details"
+}}
+
+CRITICAL: The product_details MUST be the complete object from cached data, not just the displayed fields.
+
+DATA DISPLAY RULES:
+
+WHEN SHOWING PRODUCT LISTS:
+- Display ONLY: name_en and brand_en
+- Format: "1. name_en - brand_en"
+
+WHEN SHOWING SINGLE PRODUCT DETAILS:
+- Display ONLY: name_en, brand_en, unit, minQuantity, maxQuantity, specification_en, description_en, modal
+- Display a plain text with these fields clearly labeled but no bold or '**' formatting
+WORKFLOW:
+1. User selects product → Show details with 8 fields only
+2. User confirms product and request type → Call update_session_memory with COMPLETE product object
+3. Session updated → Hand over to next agent (do not give a session update or any message after updating agent to "request_details" because the next agent will take over immediately)
+
+TOOLS:
+- fetch_inventory_query: Only for NEW product searches
+- update_session_memory: Only for final confirmation with COMPLETE product object"""
+
+    return system_prompt

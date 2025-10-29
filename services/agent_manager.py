@@ -21,7 +21,7 @@ FIELD_METADATA = {
         "validation": "positive_number",
         "required_for": ["order", "sample", "quotation", "ppr"],
         "agent": 2,
-        "description": "Quantity required (must be positive number), greater than or equal to minQuantity and less than available stock" 
+        "description": "Quantity required (must be positive number), greater than or equal to minQuantity and less than 'maxQuantity' (available stock)" 
     },
     "price_per_unit": {
         "type": "number",
@@ -75,14 +75,14 @@ FIELD_METADATA = {
     "delivery_date": {
         "type": "date",
         "validation": "future_date",
-        "required_for": ["order", "sample", "ppr"],
+        "required_for": ["order", "sample", "quotation","ppr"],
         "agent": 2,
         "description": "Delivery date (must be after today)"
     },
     "market": {
         "type": "select",
         "options": "fetch_from_site via API",
-        "required_for": ["order","ppr"],
+        "required_for": ["order","sample", "quotation","ppr"],
         "agent": 3,
         "description": "Target market"
     }
