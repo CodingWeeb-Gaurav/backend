@@ -1,6 +1,6 @@
 import requests
 
-API_KEY = "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"
+API_KEY = "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"
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 headers = {
@@ -23,3 +23,4 @@ if response.status_code == 200:
     print("Response:", result["choices"][0]["message"]["content"])
 else:
     print("Error:", response.status_code, response.text)
+    

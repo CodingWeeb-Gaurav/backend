@@ -19,7 +19,7 @@ client = AsyncOpenAI(
 )
 
 # Allowed units for order placement
-ALLOWED_UNITS = ["KG", "TON", "L"]
+ALLOWED_UNITS = ["KG", "TON"]
 
 # Global cache for product searches
 PRODUCT_CACHE = {}
@@ -29,7 +29,6 @@ PRODUCT_DETAILS_CACHE = {}
 PRODUCT_LIST_CACHE = {}
 # Cache for current product list display
 CURRENT_PRODUCT_LIST = []
-
 async def fetch_inventory_query(query: str):
     """
     Fetch products from inventory API - Tool for AI to call with caching
@@ -37,8 +36,15 @@ async def fetch_inventory_query(query: str):
     # Check cache first
     cache_key = query.lower().strip()
     if cache_key in PRODUCT_CACHE:
-        print(f"🔄 Using cached results for: {query}")
-        return PRODUCT_CACHE[cache_key]
+        cached_result = PRODUCT_CACHE[cache_key]
+        # Only use cache if it actually has products
+        if cached_result.get("results", {}).get("products"):
+            print(f"🔄 Using cached results for: {query}")
+            return cached_result
+        else:
+            print(f"🔄 Cache has empty results for: {query}, making new API call")
+            # Remove the bad cache entry
+            del PRODUCT_CACHE[cache_key]
     
     print(f"🔍 Fetching from API: {query}")
     url = "https://nischem.com:2053/inventory/getQueryResult"
@@ -62,15 +68,15 @@ async def fetch_inventory_query(query: str):
                 result = await response.json()
                 print(f"✅ API call successful, found {len(result.get('results', {}).get('products', []))} products")
                 
-                # Cache the result AND cache individual product details
-                PRODUCT_CACHE[cache_key] = result
-                
-                # Clear previous list cache
-                PRODUCT_LIST_CACHE.clear()
-                CURRENT_PRODUCT_LIST.clear()
-                
-                # Also cache each product individually by ID for quick lookup
+                # Only cache if we actually got products
                 if result.get("results", {}).get("products"):
+                    PRODUCT_CACHE[cache_key] = result
+                    
+                    # Clear previous list cache
+                    PRODUCT_LIST_CACHE.clear()
+                    CURRENT_PRODUCT_LIST.clear()
+                    
+                    # Also cache each product individually by ID for quick lookup
                     valid_products = []
                     for i, product in enumerate(result["results"]["products"]):
                         product_id = product.get("_id")
@@ -94,6 +100,8 @@ async def fetch_inventory_query(query: str):
                     
                     print(f"📊 Cached {len(valid_products)} valid products with list mapping")
                     print(f"📋 Current list mappings: {PRODUCT_LIST_CACHE}")
+                else:
+                    print("❌ No products found in API response, not caching")
                 
                 return result
     except Exception as e:
@@ -246,7 +254,7 @@ async def process_with_ai_tools(user_input: str, session_data: dict):
                             "request": {
                                 "type": "string",
                                 "description": "Request type: 'sample', 'quotation', 'ppr', or 'order' ONLY",
-                                "enum": ["sample", "quotation", "ppr", "order"]
+                                "enum": ["Sample", "Quote", "ppr", "order"]
                             },
                             "agent": {
                                 "type": "string", 
@@ -409,13 +417,16 @@ def build_system_prompt() -> str:
 You are the first agent in a triple-agent system where you handle product searches and selections. After your completion, you will hand over to the second agent who collects request details by changing the session's agent to "request_details".
 CURRENT CACHED PRODUCT DATA:
 {cached_data}
+if the user gives a new product search query, use the fetch_inventory_query tool to get fresh results. 
+you can only take the data of product and request, any other details like quantity price address purpose will be handled by the upcoming agents.
+if user tells you the details of quantity, unit, contact details, address, industry or anything else unrelated to product and request you should ignore them and tell the user that those details will be handled by the next agents.
 
 CRITICAL RULES FOR SESSION UPDATES:
 - When calling update_session_memory, you MUST provide the COMPLETE product_details object from the cached data above
 - The product_details MUST include all fields, especially the _id field
 - Do NOT create a new object or modify the fields - use the exact object from cached data
 - Find the complete product object by matching product_id or list_number from the cached data
-
+- After updating session to "request_details", you cannot make any changes in selected product or request type. If the user asks to update those, politely refuse and tell them to refresh the session to start a new order.
 HOW TO GET COMPLETE PRODUCT_DETAILS FOR SESSION UPDATE:
 1. When user confirms a product, note the product_id (e.g., "68f9da20c7fe40d80722c436")
 2. Find the matching product in the cached data above by _id field
@@ -451,10 +462,10 @@ WHEN SHOWING PRODUCT LISTS:
 - Format: "1. name_en - brand_en"
 
 WHEN SHOWING SINGLE PRODUCT DETAILS:
-- Display ONLY: name_en, brand_en, unit, minQuantity, maxQuantity, specification_en, description_en, modal
+- Display ONLY: name_en, brand_en, unit, specification_en, description_en.
 - Display a plain text with these fields clearly labeled but no bold or '**' formatting
 WORKFLOW:
-1. User selects product → Show details with 8 fields only
+1. User selects product → Show single product details with specified 5 fields only in a bulleted list
 2. User confirms product and request type → Call update_session_memory with COMPLETE product object
 3. Session updated → Hand over to next agent (do not give a session update or any message after updating agent to "request_details" because the next agent will take over immediately)
 

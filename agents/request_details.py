@@ -530,15 +530,19 @@ def check_completion_status(args: dict, required_fields: list) -> dict:
 # Helper Functions
 def get_required_fields(request_type: str) -> list:
     """Get required fields based on request type"""
-    base_fields = ["unit", "quantity", "price_per_unit", "expected_price"]
+    # Convert to lowercase for consistent comparison
+    request_type_lower = request_type.lower()
     
-    if request_type in ["order", "sample", "quotation"]:
-        base_fields.extend(["phone", "incoterm", "mode_of_payment", "packaging_pref"])
+    # Map request types to their required fields
+    field_requirements = {
+        "order":  ["unit", "quantity", "price_per_unit", "expected_price", "phone", "incoterm", "mode_of_payment", "packaging_pref", "delivery_date"],
+        "sample": ["unit", "quantity", "price_per_unit", "expected_price", "phone", "incoterm", "mode_of_payment", "packaging_pref", "delivery_date"],
+        "quote":  ["unit", "quantity", "price_per_unit", "expected_price", "phone", "incoterm", "mode_of_payment", "packaging_pref", "delivery_date"],  
+        "ppr":    ["unit", "quantity", "price_per_unit", "expected_price", "delivery_date"]  # PPR has different requirements
+    }
     
-    if request_type in ["order", "sample", "ppr"]:
-        base_fields.append("delivery_date")
-    
-    return base_fields
+    # Return fields for the specific request type, or base fields if not found
+    return field_requirements.get(request_type_lower, ["unit", "quantity", "price_per_unit", "expected_price"])
 
 def get_completed_fields(product_details: dict, required_fields: list) -> list:
     """Get list of completed fields"""
@@ -558,6 +562,7 @@ def build_system_prompt(session_data: dict, required_fields: list, completed_fie
     You are the second agent in a triple-agent system where you collect and validate all necessary details for processing user requests.
     The first agent has already provided the product and request type. and after your completion, you will hand over to the third agent who manages address and purpose by changing the session's agent to "address_purpose".
 Your job is to collect and validate all required details for a {request_type} request.
+Always respond with a plain text without BOLD, ITALICS, or MARKDOWN formatting.
 
 PRODUCT INFORMATION:
 - Product: {session_data.get('product_name', 'N/A')}
@@ -569,14 +574,14 @@ PRODUCT INFORMATION:
 ALL REQUIRED FIELDS for {request_type}:
 {format_fields_info(required_fields, session_data)}
 
-FIELD OPTIONS:
+FIELD OPTIONS: 
 - Unit: KG, TON
 - Incoterm: Ex Factory, Deliver to Buyer Factory  
 - Payment: LC, TT, Cash
 - Packaging: Bulk Tanker, PP Bag, Jerry Can, Drum
 
 CURRENT PROGRESS:
-✅ Completed: {len(completed_fields)}/{len(required_fields)} fields
+Completed: {len(completed_fields)}/{len(required_fields)} fields
 {format_progress(completed_fields, pending_fields, product_details)}
 
 🚀 **NEW BULK PROCESSING STRATEGY:**
@@ -585,20 +590,22 @@ CURRENT PROGRESS:
 2. **EXTRACT BULK**: Use extract_and_validate_all_fields to process multiple fields from user message
 3. **VALIDATE SILENTLY**: Validate fields in background without asking for confirmation
 4. **CONTINUOUS FLOW**: Keep conversation moving without unnecessary "ok" confirmations
-
+5. When showing the Field options in any message, use '•' points like 'Incoterm : • Ex Factory • Deliver to Buyer Factory' or 'Payment Method : • LC • TT • Cash'
 **RESPONSE GUIDELINES:**
 - Start by showing ALL missing fields in first message
 - Extract ALL possible values from user messages (even if you asked for specific field)
 - Validate silently in background
 - If validation fails, mention ONLY the invalid fields
 - Keep conversation flowing naturally
-- Calculate expected_price automatically when both quantity and price_per_unit are provided
-- When all fields complete, check completion_status and hand over
-
+- Calculate expected_price automatically (using the calculate_expected_price tool only) when both quantity and price_per_unit are provided
+- When all fields are validated then show the list of all the fields with their values before asking for final confirmation before updating session
+- When all fields complete, ask for check completion_status and hand over
+- You are unable to update any details except the required fields, if user asks to change other details (selected product or request(sample, ppr,order, quote)), politely refuse and tell them to refresh the session to start a new order.
+- After changing the session's agent to "address_purpose", you cannot make any more changes or place new orders. Because the third agent has taken over the chat. If the user still asks then tell them to refresh the session to start a new order.
 **TOOLS AVAILABLE:**
 - extract_and_validate_all_fields: Extract and validate ALL fields from user message (PREFERRED)
 - validate_individual_field: Validate single field
-- calculate_expected_price: Compute total price automatically  
+- calculate_expected_price: Always Compute total price from quantity * price per unit using this tool only, not by yourself, always show  the response of calculated_expected_price tool
 - update_validated_field: Store validated field
 - check_completion_status: Verify completion
 

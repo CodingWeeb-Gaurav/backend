@@ -5,14 +5,23 @@ import aiohttp
 import ssl
 import certifi
 
-# Authentication token
-AUTH_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2OGQ2MTViMDNlZWUyNGYyNmM2MjhmNjUiLCJpYXQiOjE3NjEzMTAxMzcsImV4cCI6MTc2OTA4NjEzN30.h0rKTjeHWHHvCfWojvBMm1KweDR06CfxOt_3QmL6v9A"
-
 async def place_order_request(session_data: dict):
     """
     Backend function to place the order - COMPLIANT with API structure
     """
     print("🚀 Placing order request...")
+    
+    # Get the actual user token from session data
+    user_auth_token = session_data.get("userAuth")
+    if not user_auth_token:
+        print("❌ No userAuth token found in session data")
+        return {
+            "status": "error",
+            "error_type": "AUTH_ERROR",
+            "message": "No authentication token available"
+        }
+    
+    print(f"🔍 Using userAuth token from session: {user_auth_token[:20]}...")
     
     # Extract data from session
     product_details = session_data.get("product_details", {})
@@ -125,7 +134,7 @@ async def place_order_request(session_data: dict):
     # API endpoint
     url = "https://nischem.com:2053/order/placeOrder"
     headers = {
-        "x-auth-token-user": AUTH_TOKEN,
+        "x-auth-token-user": user_auth_token,  # Use the actual user token from session
         "x-user-type": "Buyer"
         # Note: Don't set Content-Type - aiohttp will set it automatically for FormData
     }

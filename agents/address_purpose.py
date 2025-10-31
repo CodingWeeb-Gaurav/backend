@@ -1,3 +1,4 @@
+
 # agents/address_purpose.py
 import asyncio
 import json
@@ -20,14 +21,14 @@ client = AsyncOpenAI(
 )
 
 # Authentication token
-AUTH_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2OGQ2MTViMDNlZWUyNGYyNmM2MjhmNjUiLCJpYXQiOjE3NjEzMTAxMzcsImV4cCI6MTc2OTA4NjEzN30.h0rKTjeHWHHvCfWojvBMm1KweDR06CfxOt_3QmL6v9A"
+# AUTH_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2OGQ2MTViMDNlZWUyNGYyNmM2MjhmNjUiLCJpYXQiOjE3NjEzMTAxMzcsImV4cCI6MTc2OTA4NjEzN30.h0rKTjeHWHHvCfWojvBMm1KweDR06CfxOt_3QmL6v9A"
 
 async def fetch_and_cache_data(session_data: dict):
     """Fetch addresses and industries and cache them in session data"""
     print("🔄 Fetching and caching addresses and industries...")
     
-    # Fetch addresses
-    addresses_result = await fetch_user_addresses()
+    # Fetch addresses with the actual user token
+    addresses_result = await fetch_user_addresses(session_data)  # Pass session_data here
     if addresses_result.get("status") == "success":
         session_data["_cached_addresses"] = addresses_result["addresses"]
         print(f"✅ Cached {len(addresses_result['addresses'])} REAL addresses")
@@ -37,7 +38,7 @@ async def fetch_and_cache_data(session_data: dict):
         session_data["_cached_addresses"] = []
         print(f"❌ Failed to fetch addresses: {addresses_result.get('error', 'Unknown error')}")
     
-    # Fetch industries
+    # Fetch industries (no auth needed)
     industries_result = await fetch_industries()
     if industries_result.get("status") == "success":
         session_data["_cached_industries"] = industries_result["industries"]
@@ -50,6 +51,7 @@ async def fetch_and_cache_data(session_data: dict):
     
     # Mark as fetched
     session_data["_cached_data_fetched"] = True
+
 
 async def handle_address_purpose(user_input: str, session_data: dict):
     """
@@ -612,12 +614,26 @@ async def fetch_industries():
             "error": str(e)
         }
 
-async def fetch_user_addresses():
-    """Fetch user addresses using authentication token - NO FALLBACKS"""
+async def fetch_user_addresses(session_data: dict):
+    """Fetch user addresses using the ACTUAL user token from session - NO FALLBACKS"""
     print("🔍 Fetching user addresses from API...")
+    
+    # Get the actual user token from session data
+    user_auth_token = session_data.get("userAuth")
+    if not user_auth_token:
+        print("❌ No userAuth token found in session data")
+        return {
+            "addresses": [],
+            "count": 0,
+            "status": "error", 
+            "error": "No authentication token available"
+        }
+    
+    print(f"🔍 Using userAuth token from session: {user_auth_token[:20]}...")
+    
     url = "https://nischem.com:2053/user/getAddresses"
     headers = {
-        "x-auth-token-user": AUTH_TOKEN,
+        "x-auth-token-user": user_auth_token,  # Use the actual user token
         "Content-Type": "application/json",
         "x-auth-language": "English",
         "x-user-type": "Buyer"
@@ -686,12 +702,14 @@ def build_system_prompt(session_data: dict) -> str:
     actual_addresses = "\n".join([f"- {addr.get('addressLine', 'Unknown')}" for addr in cached_addresses[:3]])
     
     prompt = f"""You are the **Finalization Agent** for chemical product orders.
-
+you are the third agent in a multi-agent system designed to finalize orders for chemical products.
+    
 🚨 **CRITICAL RULES - NO HALLUCINATION:**
 1. **ONLY USE REAL DATA**: Only show industries/addresses that were successfully fetched from API
 2. **NO DUMMY DATA**: Never invent or show placeholder industries or addresses
 3. **NO FAKE NAMES**: Never invent names, emails, or phone numbers for addresses
-
+4. **DISPLAY ENTIRE LIST OF INDUSTRIES/ADDRESSES**: Always show the complete list of available industries/addresses from API.
+5. Always display clean numbered lists without Bold, Italics or Markdown formatting.
 ACTUAL AVAILABLE DATA FROM API:
 - Industries ({len(cached_industries)}): 
 {actual_industries}
@@ -706,7 +724,7 @@ WORKFLOW:
 4. User selects address → store COMPLETE REAL address object with select_address
 5. Auto-show final confirmation (show_final_confirmation)
 6. Place order when user confirms (place_order_final)
-
+7. After succesful completion, tell the user to refresh the page if he wants to place a new request. Because you cannot do anything more after the order is placed.
 ADDRESS SELECTION:
 - When user selects address by number, ALWAYS use the complete address object from get_cached_addresses
 - NEVER invent contact details - use only what's in the address object from API
@@ -717,7 +735,8 @@ PROHIBITED:
 - ❌ Never invent email addresses or phone numbers
 - ❌ Never create placeholder addresses
 - ❌ Only use data from get_cached_industries and get_cached_addresses
-
+- ❌ You are unable to update any details except industry and address, if user asks to change other details, politely refuse and tell them to refresh the session to start a new order.
+- ❌ After an order is placed successfully, you cannot make any more changes or place new orders in the same session.
 START by showing ONLY REAL industries immediately."""
 
     return prompt
